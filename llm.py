@@ -7,23 +7,15 @@ from torch.utils.data import DataLoader
 from torch.optim import RAdam
 from tqdm import tqdm
 from utils import show_tensor, init_camera_and_window
+
+# Initializing camera, display, surface
 camera, display, surface = init_camera_and_window()
-        
-#Finetuning a lm to generate video frames instead of text
+
 class Trainer:
-    def __init__(self, epochs=4,
-                       batch_size=1,
-                       lr=1e-4,
-                       embedding_size=32000,
-                       save_every=100,
-    ):
-        self.generator = Generator(latent_dim=embedding_size                                ).to('mps')
-        gw = torch.load('engine.pt', map_location='mps')
-        self.generator.load_state_dict(gw)
-        self.encoder = ImageEncoder(latent_dim=embedding_size).to('mps')
-        ew  = torch.load('encoder.pt', map_location='mps')
-        self.encoder.load_state_dict(ew)
-        self.lm = transformers.GPT2LMHeadModel.from_pretrained('gpt2').to('mps')
+    def __init__(self, epochs=4, batch_size=1, lr=1e-4, embedding_size=32000, save_every=100):
+        self.generator = Generator(latent_dim=embedding_size).to(device)
+        self.encoder = ImageEncoder(latent_dim=embedding_size).to(device)
+        self.lm = transformers.GPT2LMHeadModel.from_pretrained('gpt2').to(device)
         self.tokenizer = transformers.GPT2Tokenizer.from_pretrained('gpt2')
         self.optim = RAdam(self.lm.parameters(), lr=lr)
         self.dataset = Dataset(max_ctx_length=128, data_aug=True)
@@ -32,6 +24,7 @@ class Trainer:
         self.save_every = save_every
         self.epochs = epochs
         self.embedding_size = embedding_size
+
     def train(self):
         """Train the model."""
         print("Beginning Training...")
@@ -50,15 +43,13 @@ class Trainer:
                 bar.update(1)
 
     def training_step(self, x):
-        #Encode the images
-        x = x.to('mps')
+        x = x.to(device)
         self.optim.zero_grad()
         encoded = self.encoder(x)
 
-        #Get argmax of the encodings
-        tokenized = torch.argmax(encoded, dim=1).to(torch.int)
-        print(tokenized)
-        print(tokenized.shape)
+        # Tokenize images
+        tokenized = self.tokenize_images(encoded)
+
         lm = self.lm(tokenized, labels=tokenized)
         loss = lm.loss
         loss.backward()
@@ -66,27 +57,32 @@ class Trainer:
         self.optim.step()
         return loss.item()
 
+    def tokenize_images(self, encoded):
+        # Get argmax of the encodings
+        tokenized = torch.argmax(encoded, dim=1).to(torch.int)
+        return tokenized
+
     def save(self):
         torch.save(self.lm.state_dict(), 'lm.pt')
-    
-    def test_step(self, x):
-        x = x.to('mps')
 
-        #Encode the images
+    def test_step(self, x):
+        x = x.to(device)
+
+        # Encode the images
         encoded = self.encoder(x)
-        encoded = torch.argmax(encoded, dim=1).to(torch.int)
-        print(encoded)
-        to_lm = self.lm(encoded)
+        tokenized = self.tokenize_images(encoded)
+        to_lm = self.lm(tokenized)
         to_lm = to_lm.logits
         to_lm = torch.argmax(to_lm, dim=-1).unsqueeze(-1)
-        
-        #Send to generator
+
+        # Send to generator
         generated = self.generator(torch.zeros_like(x), to_lm)
 
         for i in range(generated.shape[-1]):
-            show_tensor(generated[:,:,:,:,i], display, surface)
+            show_tensor(generated[:, :, :, :, i], display, surface)
 
 if __name__ == '__main__':
+    device = torch.device('mps')  # Define the device
     trainer = Trainer()
     trainer.train()
     trainer.save()
